@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- Mesma versão de linguagem que a Unity 6 suporta: o que compila aqui compila lá -->
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Two.Core.Tests</AssemblyName>
+    <RootNamespace>Two.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Compila OS MESMOS fontes que a Unity compila (fonte única de verdade, zero cópia) -->
+  <ItemGroup>
+    <Compile Include="../../UnityProject/Assets/_Project/Scripts/Core/**/*.cs" LinkBase="Core" />
+  </ItemGroup>
+
+</Project>

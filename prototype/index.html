@@ -1,0 +1,633 @@
+<title>Fio de Luz</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@300;500;700&display=swap">
+<style>
+  /* Layout: jogo de uma tela — canvas ocupa tudo, overlays por cima.
+     Tema único deliberado: o jogo É um mundo noturno iluminado pelo fio. */
+  :root{
+    --bg:#070b16;          /* noite profunda, azulada */
+    --fg:#dfe8ff;          /* branco-azulado suave */
+    --thread:#ffd98a;      /* luz do fio — dourado quente (jogador) */
+    --partner:#7de8d8;     /* luz do parceiro — verde-água */
+    --muted:#6b7694;       /* texto secundário */
+    --danger:#ff7a6b;
+    color-scheme:dark;
+    --display:"Bricolage Grotesque",system-ui,sans-serif;
+  }
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--display);
+       overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+  #game{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+           justify-content:center;text-align:center;gap:14px;padding:24px 16px;
+           background:rgba(7,11,22,.72);backdrop-filter:blur(6px);z-index:10}
+  .overlay h1{font-weight:300;font-size:clamp(34px,9vw,64px);letter-spacing:.04em;margin:0;
+              color:var(--thread);text-shadow:0 0 28px rgba(255,217,138,.45);text-wrap:balance}
+  .overlay h1 b{font-weight:700;color:var(--partner);text-shadow:0 0 28px rgba(125,232,216,.45)}
+  .overlay p{max-width:30em;margin:0;line-height:1.55;color:var(--fg)}
+  .overlay .hintline{color:var(--muted);font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:520px}
+  .key{border:1px solid rgba(223,232,255,.22);border-radius:10px;padding:8px 12px;
+       font-size:13px;color:var(--fg);background:rgba(223,232,255,.05)}
+  .key b{color:var(--thread);font-weight:700}
+  .tap{margin-top:10px;font-size:15px;color:var(--partner);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45}}
+  @media (prefers-reduced-motion:reduce){.tap{animation:none}}
+  #hud{position:fixed;left:16px;top:calc(env(safe-area-inset-top,0px) + 12px);z-index:5;
+       font-size:13px;color:var(--muted);letter-spacing:.05em;display:flex;gap:14px;
+       font-variant-numeric:tabular-nums}
+  #hint{position:fixed;left:50%;transform:translateX(-50%);
+        bottom:calc(env(safe-area-inset-bottom,0px) + 14px);z-index:5;font-size:14px;
+        color:var(--fg);background:rgba(7,11,22,.55);border:1px solid rgba(223,232,255,.14);
+        border-radius:999px;padding:7px 16px;max-width:88vw;text-align:center;
+        transition:opacity .4s}
+</style>
+
+<canvas id="game"></canvas>
+<div id="hud"><span id="timer">0:00</span><span id="zone"></span></div>
+<div id="hint" hidden></div>
+
+<div class="overlay" id="start">
+  <h1>fio <b>de</b> luz</h1>
+  <p>Dois espíritos ligados por um fio. Este protótipo testa o <em>feel</em> do primeiro:
+     correr, pular e balançar. Seu parceiro de luz te segue — fixe-o para usá-lo de âncora.</p>
+  <div class="controls">
+    <span class="key"><b>esquerda da tela</b> arrastar = andar</span>
+    <span class="key"><b>direita embaixo</b> = pular</span>
+    <span class="key"><b>direita em cima</b> segurar = mirar · soltar = lançar o fio</span>
+    <span class="key"><b>canto superior direito</b> = fixar o parceiro</span>
+  </div>
+  <div class="hintline">teclado: A/D anda · espaço pula · J mira/lança · K fixa</div>
+  <div class="tap">toque para começar</div>
+</div>
+
+<div class="overlay" id="win" hidden>
+  <h1>vocês <b>chegaram</b></h1>
+  <p id="wintime"></p>
+  <p class="hintline">este é o gate da fase 0: balançar tem que dar vontade de de novo</p>
+  <div class="tap">toque para recomeçar</div>
+</div>
+
+<script>
+'use strict';
+/* =====================================================================
+   FIO DE LUZ — protótipo jogável da Fase 0
+   Port fiel de Two.Core (C#): mesmos números, mesmas regras.
+   Espelho de UnityProject/Assets/_Project/Scripts/Core/Config/Tuning.cs
+   ===================================================================== */
+const T = {
+  motor:{ maxRun:7.0, gAccel:85, gDecel:95, aAccel:48, aDecel:20,
+          jumpH:2.7, tApex:0.38, fallMult:1.9, cutMult:3.2, maxFall:17,
+          coyote:0.12, buffer:0.15, bw:0.55, bh:0.95 },
+  swing:{ pump:16, climb:2.5, minL:0.8, maxL:6.0, boost:1.06, drag:0.12 },
+  tether:{ maxLen:9.0, stiff:12, damp:25, maxPull:12 },
+  rope:{ n:20, slack:1.12, iters:3, damping:0.995, gScale:0.6 },
+  aim:{ range:6.0, angleDeg:55, wAngle:1.0, wDist:0.25 }
+};
+T.motor.gravity = 2*T.motor.jumpH/(T.motor.tApex*T.motor.tApex);
+T.motor.jumpV   = T.motor.gravity*T.motor.tApex;
+
+const DT = 1/60, STEP = 0.01;
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const len=(x,y)=>Math.hypot(x,y);
+
+/* ---------- mundo: AABBs sólidos (metros, y para cima) ---------- */
+const solids = [
+  [0,10,-2,0],[12,18,-2,0],[26,34,-2,0],          // plataformas baixas
+  [35,38,1.4,1.8],[39.5,42.5,2.8,3.2],[43,46,2.8,3.2], // escalada
+  [58,66,-2,0]                                     // chegada
+];
+const hooks = [[21.5,5.5],[49.5,8],[55,8.5]];
+const checkpoints = [[2,1.2],[28,1.2],[44.5,4.4],[59,1.2]];
+const GOAL_X = 62, FALL_Y = -7;
+
+function collides(cx,cy,hw,hh){
+  for(const s of solids)
+    if(cx-hw<s[1] && cx+hw>s[0] && cy-hh<s[3] && cy+hh>s[2]) return true;
+  return false;
+}
+
+/* ---------- PlayerMotor (port de PlayerMotor.cs) ---------- */
+function makeMotor(x,y){return {x,y,vx:0,vy:0,grounded:false,facing:1,
+  coyote:0,buffer:0,consumed:false};}
+function moveAxis(m,dx,dy,hw,hh){
+  let rem=len(dx,dy); if(rem<1e-7)return false;
+  const ux=dx/rem, uy=dy/rem;
+  while(rem>0){ const s=Math.min(STEP,rem);
+    const nx=m.x+ux*s, ny=m.y+uy*s;
+    if(collides(nx,ny,hw,hh)) return true;
+    m.x=nx; m.y=ny; rem-=s; }
+  return false;
+}
+function motorStep(m,inp,dt){
+  const t=T.motor, hw=t.bw/2, hh=t.bh/2, ev={};
+  const wasG=m.grounded, fallBefore=-m.vy;
+  m.buffer = inp.jumpPressed ? t.buffer : Math.max(0,m.buffer-dt);
+  m.coyote = m.grounded ? t.coyote : Math.max(0,m.coyote-dt);
+
+  const target=inp.moveX*t.maxRun;
+  const rate=(Math.abs(target)>0.01)?(m.grounded?t.gAccel:t.aAccel)
+                                    :(m.grounded?t.gDecel:t.aDecel);
+  const diff=target-m.vx;
+  m.vx = Math.abs(diff)<=rate*dt ? target : m.vx+Math.sign(diff)*rate*dt;
+  if(Math.abs(inp.moveX)>0.01) m.facing = inp.moveX>0?1:-1;
+
+  if(m.buffer>0 && (m.grounded||m.coyote>0) && !m.consumed){
+    m.vy=t.jumpV; m.buffer=0; m.coyote=0; m.consumed=true; m.grounded=false; ev.jumped=true;
+  }
+  let g=t.gravity;
+  if(m.vy<0) g*=t.fallMult; else if(m.vy>0 && !inp.jumpHeld) g*=t.cutMult;
+  m.vy=Math.max(m.vy-g*dt,-t.maxFall);
+
+  if(moveAxis(m,m.vx*dt,0,hw,hh)) m.vx=0;
+  const hitV=moveAxis(m,0,m.vy*dt,hw,hh);
+  if(hitV) m.vy=0;
+
+  const below=collides(m.x,m.y-0.02,hw,hh);
+  if(below && m.vy<=0){
+    if(!wasG){ ev.landed=true; ev.impact=fallBefore; }
+    m.grounded=true; m.consumed=false;
+  } else m.grounded=false;
+  return ev;
+}
+
+/* ---------- SwingSim (port de SwingSim.cs) ---------- */
+function swingStep(m,sw,moveX,climbY,dt){
+  const t=T.swing, g=T.motor.gravity, hw=T.motor.bw/2, hh=T.motor.bh/2;
+  m.vx += moveX*t.pump*dt;
+  m.vy -= g*dt;
+  const k=Math.max(0,1-t.drag*dt); m.vx*=k; m.vy*=k;
+  if(Math.abs(climbY)>0.01) sw.len=clamp(sw.len-climbY*t.climb*dt,t.minL,t.maxL);
+
+  let px=m.x+m.vx*dt, py=m.y+m.vy*dt;
+  let rx=px-sw.ax, ry=py-sw.ay, d=len(rx,ry);
+  if(d>sw.len && d>1e-5){
+    const nx=rx/d, ny=ry/d;
+    px=sw.ax+nx*sw.len; py=sw.ay+ny*sw.len;
+    const rs=m.vx*nx+m.vy*ny;
+    if(rs>0){ m.vx-=nx*rs; m.vy-=ny*rs; }
+  }
+  // desliza eixo a eixo (pêndulo baixo raspa o chão, não congela)
+  if(!collides(px,m.y,hw,hh)) m.x=px; else m.vx=0;
+  if(!collides(m.x,py,hw,hh)) m.y=py; else m.vy=0;
+}
+
+/* ---------- Tether (port de TetherConstraint.cs) ---------- */
+function tetherSolve(m,ax,ay,dt){
+  const t=T.tether, hw=T.motor.bw/2, hh=T.motor.bh/2;
+  let rx=m.x-ax, ry=m.y-ay; const d=len(rx,ry);
+  if(d<=t.maxLen||d<1e-5) return;
+  const nx=rx/d, ny=ry/d, excess=d-t.maxLen;
+  const rs=m.vx*nx+m.vy*ny;
+  if(rs>0){ const f=Math.min(1,t.damp*dt); m.vx-=nx*rs*f; m.vy-=ny*rs*f; }
+  const pull=Math.min(excess*Math.min(1,t.stiff*dt), t.maxPull*dt);
+  const px=m.x-nx*pull, py=m.y-ny*pull;
+  if(!collides(px,m.y,hw,hh)) m.x=px;
+  if(!collides(m.x,py,hw,hh)) m.y=py;
+}
+
+/* ---------- HookSelector (port de HookSelector.cs) ---------- */
+function selectHook(ox,oy,dx,dy,list){
+  const t=T.aim, dl=len(dx,dy)||1; dx/=dl; dy/=dl;
+  const cosMax=Math.cos(t.angleDeg*Math.PI/180);
+  let best=-1,bs=1e9;
+  for(let i=0;i<list.length;i++){
+    const tx=list[i][0]-ox, ty=list[i][1]-oy, d=len(tx,ty);
+    if(d<1e-4||d>t.range) continue;
+    const cos=(tx*dx+ty*dy)/d;
+    if(cos<cosMax) continue;
+    const score=(1-cos)*t.wAngle + (d/t.range)*t.wDist;
+    if(score<bs){bs=score;best=i;}
+  }
+  return best;
+}
+
+/* ---------- VerletRope (port de VerletRope.cs) ---------- */
+function makeRope(ax,ay,bx,by){
+  const n=T.rope.n, p=[],q=[];
+  for(let i=0;i<n;i++){const f=i/(n-1);
+    p.push([ax+(bx-ax)*f, ay+(by-ay)*f]); q.push([p[i][0],p[i][1]]);}
+  return {p,q};
+}
+function ropeStep(r,ax,ay,bx,by,dt){
+  const t=T.rope, n=t.n, g=T.motor.gravity*t.gScale*dt*dt;
+  for(let i=1;i<n-1;i++){
+    const cx=r.p[i][0], cy=r.p[i][1];
+    r.p[i][0]+= (cx-r.q[i][0])*t.damping;
+    r.p[i][1]+= (cy-r.q[i][1])*t.damping - g;
+    r.q[i][0]=cx; r.q[i][1]=cy;
+  }
+  const span=Math.max(len(bx-ax,by-ay),0.1), seg=span*t.slack/(n-1);
+  for(let it=0;it<t.iters;it++){
+    r.p[0][0]=ax; r.p[0][1]=ay; r.p[n-1][0]=bx; r.p[n-1][1]=by;
+    for(let i=0;i<n-1;i++){
+      let ex=r.p[i+1][0]-r.p[i][0], ey=r.p[i+1][1]-r.p[i][1];
+      const d=len(ex,ey); if(d<1e-6)continue;
+      const err=(d-seg)/d;
+      if(i===0){ r.p[1][0]-=ex*err; r.p[1][1]-=ey*err; }
+      else if(i===n-2){ r.p[i][0]+=ex*err; r.p[i][1]+=ey*err; }
+      else{ r.p[i][0]+=ex*err*.5; r.p[i][1]+=ey*err*.5;
+            r.p[i+1][0]-=ex*err*.5; r.p[i+1][1]-=ey*err*.5; }
+    }
+  }
+  r.p[0][0]=ax; r.p[0][1]=ay; r.p[n-1][0]=bx; r.p[n-1][1]=by;
+}
+
+/* =====================================================================
+   ESTADO DO JOGO
+   ===================================================================== */
+const game={
+  state:'start',           // start | play | win
+  motor:makeMotor(2,1.2),
+  mode:'move',             // move | swing
+  sw:{ax:0,ay:0,len:0,toPartner:false},
+  partner:{x:0.8,y:2.2,pinned:false,bob:0},
+  rope:null,               // fio jogador↔parceiro
+  swingRope:null,          // fio jogador↔âncora
+  checkpoint:0, deaths:0, time:0, started:false,
+  fade:0, apexGlow:0, particles:[]
+};
+game.rope=makeRope(game.motor.x,game.motor.y,game.partner.x,game.partner.y);
+
+/* ---------- input (zonas de toque = mesmas do TouchInputSource.cs) ---------- */
+const input={moveX:0,moveY:0,jumpPressed:false,jumpHeld:false,
+  actionHeld:false,actionReleased:false,pinPressed:false,
+  stick:{id:-1,ox:0,oy:0,x:0,y:0}, jumpId:-1, actionId:-1};
+const keys={};
+
+addEventListener('keydown',e=>{
+  if(e.repeat)return;
+  keys[e.code]=true;
+  if(e.code==='Space'){input.jumpPressed=true;}
+  if(e.code==='KeyK'){input.pinPressed=true;}
+  startIfWaiting();
+});
+addEventListener('keyup',e=>{
+  keys[e.code]=false;
+  if(e.code==='KeyJ') input.actionReleased=true;
+});
+
+function zoneOf(x,y,W,H){
+  if(x<W*0.5) return 'stick';
+  if(y>H*0.62) return 'jump';
+  if(y<H*0.2 && x>W*0.72) return 'pin';
+  return 'action';
+}
+function onTouchStart(e){
+  startIfWaiting();
+  for(const t of e.changedTouches){
+    const z=zoneOf(t.clientX,t.clientY,innerWidth,innerHeight);
+    if(z==='stick'&&input.stick.id<0){
+      input.stick.id=t.identifier; input.stick.ox=t.clientX; input.stick.oy=t.clientY;
+      input.stick.x=0; input.stick.y=0;
+    }else if(z==='jump'&&input.jumpId<0){
+      input.jumpId=t.identifier; input.jumpPressed=true; input.jumpHeld=true;
+    }else if(z==='pin'){
+      input.pinPressed=true;
+    }else if(z==='action'&&input.actionId<0){
+      input.actionId=t.identifier; input.actionHeld=true;
+    }
+  }
+  e.preventDefault();
+}
+function onTouchMove(e){
+  for(const t of e.changedTouches){
+    if(t.identifier===input.stick.id){
+      const R=110;
+      let dx=(t.clientX-input.stick.ox)/R, dy=-(t.clientY-input.stick.oy)/R;
+      const d=len(dx,dy); if(d>1){dx/=d;dy/=d;}
+      if(len(dx,dy)<0.18){dx=0;dy=0;}
+      input.stick.x=dx; input.stick.y=dy;
+    }
+  }
+  e.preventDefault();
+}
+function onTouchEnd(e){
+  for(const t of e.changedTouches){
+    if(t.identifier===input.stick.id){input.stick.id=-1;input.stick.x=0;input.stick.y=0;}
+    if(t.identifier===input.jumpId){input.jumpId=-1;input.jumpHeld=false;}
+    if(t.identifier===input.actionId){input.actionId=-1;input.actionHeld=false;input.actionReleased=true;}
+  }
+  e.preventDefault();
+}
+addEventListener('touchstart',onTouchStart,{passive:false});
+addEventListener('touchmove',onTouchMove,{passive:false});
+addEventListener('touchend',onTouchEnd,{passive:false});
+addEventListener('touchcancel',onTouchEnd,{passive:false});
+
+function collectInput(){
+  let mx=input.stick.x, my=input.stick.y;
+  if(keys.KeyA||keys.ArrowLeft)mx-=1;
+  if(keys.KeyD||keys.ArrowRight)mx+=1;
+  if(keys.KeyW||keys.ArrowUp)my+=1;
+  if(keys.KeyS||keys.ArrowDown)my-=1;
+  mx=clamp(mx,-1,1); my=clamp(my,-1,1);
+  const jumpHeld=input.jumpHeld||!!keys.Space;
+  const actionHeld=input.actionHeld||!!keys.KeyJ;
+  let ax,ay;
+  if(len(mx,my)>0.3){ ax=mx; ay=Math.max(my,0.15); }
+  else { ax=game.motor.facing*0.7; ay=0.7; }
+  const out={moveX:mx,moveY:my,jumpPressed:input.jumpPressed,jumpHeld,
+             actionHeld,actionReleased:input.actionReleased,
+             pinPressed:input.pinPressed,aimX:ax,aimY:ay};
+  input.jumpPressed=false; input.actionReleased=false; input.pinPressed=false;
+  return out;
+}
+
+/* ---------- simulação ---------- */
+function allAnchors(){
+  const list=hooks.slice();
+  if(game.partner.pinned) list.push([game.partner.x,game.partner.y]);
+  return list;
+}
+function simStep(dt){
+  const m=game.motor, inp=collectInput();
+  if(inp.moveX||inp.jumpPressed||inp.actionHeld) game.started=true;
+  if(game.started && game.state==='play') game.time+=dt;
+
+  if(game.mode==='move'){
+    const ev=motorStep(m,inp,dt);
+    if(ev.jumped) vibrate(12);
+    if(ev.landed&&ev.impact>6) vibrate(18);
+    if(game.partner.pinned) tetherSolve(m,game.partner.x,game.partner.y,dt);
+
+    if(inp.pinPressed) game.partner.pinned=!game.partner.pinned;
+
+    if(inp.actionReleased){
+      const list=allAnchors();
+      const i=selectHook(m.x,m.y,inp.aimX,inp.aimY,list);
+      if(i>=0){
+        const a=list[i], d=len(a[0]-m.x,a[1]-m.y);
+        game.sw={ax:a[0],ay:a[1],len:clamp(d,T.swing.minL,T.swing.maxL),
+                 toPartner:i>=hooks.length};
+        game.swingRope=makeRope(m.x,m.y,a[0],a[1]);
+        game.mode='swing'; vibrate(20);
+      }
+    }
+  } else { // swing
+    if(game.sw.toPartner && !game.partner.pinned){ releaseSwing(0.5); }
+    else{
+      const tangBefore=tangential(m);
+      swingStep(m,game.sw,inp.moveX,inp.moveY,dt);
+      const tangAfter=tangential(m);
+      if(tangBefore*tangAfter<0){ game.apexGlow=1; vibrate(10); } // ápice!
+      if(inp.jumpPressed||inp.actionReleased) releaseSwing(1);
+    }
+  }
+
+  // parceiro: flutua atrás de você (bot local; na Fase 1 vira a posição da rede)
+  const p=game.partner;
+  if(!p.pinned){
+    p.bob+=dt*2.2;
+    const tx=m.x-m.facing*1.1, ty=m.y+0.9+Math.sin(p.bob)*0.12;
+    const f=1-Math.exp(-4.5*dt);
+    p.x+=(tx-p.x)*f; p.y+=(ty-p.y)*f;
+  }
+
+  // morte: caiu no escuro → o fio te puxa de volta (sem tela de morte)
+  if(m.y<FALL_Y){
+    game.deaths++; game.fade=1;
+    const c=checkpoints[game.checkpoint];
+    Object.assign(game.motor,makeMotor(c[0],c[1]));
+    game.mode='move'; p.pinned=false; p.x=c[0]-1; p.y=c[1]+1;
+    game.rope=makeRope(m.x,m.y,p.x,p.y);
+  }
+  // checkpoints
+  for(let i=checkpoints.length-1;i>game.checkpoint;i--)
+    if(m.grounded&&m.x>=checkpoints[i][0]-1){game.checkpoint=i;break;}
+  // chegada
+  if(game.state==='play'&&m.x>GOAL_X&&m.grounded) winGame();
+
+  // cordas visuais
+  ropeStep(game.rope,m.x,m.y+0.2,p.x,p.y,dt);
+  if(game.mode==='swing'&&game.swingRope)
+    ropeStep(game.swingRope,m.x,m.y+0.3,game.sw.ax,game.sw.ay,dt);
+}
+function tangential(m){
+  const rx=m.x-game.sw.ax, ry=m.y-game.sw.ay, d=len(rx,ry)||1;
+  return m.vx*(-ry/d)+m.vy*(rx/d);
+}
+function releaseSwing(mult){
+  const m=game.motor;
+  m.vx*=T.swing.boost*mult; m.vy*=T.swing.boost*mult;
+  game.mode='move'; game.swingRope=null; vibrate(14);
+}
+function vibrate(ms){ try{navigator.vibrate&&navigator.vibrate(ms);}catch(e){} }
+
+/* =====================================================================
+   RENDER
+   ===================================================================== */
+const cv=document.getElementById('game'), cx=cv.getContext('2d');
+let W=0,H=0,DPR=1,SCALE=48;
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  W=innerWidth;H=innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;
+  SCALE=Math.max(H/11.5,40);
+}
+addEventListener('resize',resize); resize();
+
+// sprite de glow pré-renderizado (barato no mobile; nada de shadowBlur por frame)
+function glowSprite(color){
+  const s=document.createElement('canvas');s.width=s.height=128;
+  const g=s.getContext('2d'),
+        gr=g.createRadialGradient(64,64,2,64,64,64);
+  gr.addColorStop(0,color);gr.addColorStop(0.25,color.replace('1)','0.5)'));
+  gr.addColorStop(1,color.replace('1)','0)'));
+  g.fillStyle=gr;g.fillRect(0,0,128,128);
+  return s;
+}
+const glowGold=glowSprite('rgba(255,217,138,1)');
+const glowTeal=glowSprite('rgba(125,232,216,1)');
+
+// estrelas fixas (parallax)
+const stars=[];{let seed=7;const rnd=()=>((seed=seed*16807%2147483647)/2147483647);
+  for(let i=0;i<110;i++)stars.push([rnd()*90,rnd()*18-2,rnd()*1.3+0.4,rnd()*0.5+0.3]);}
+
+let camX=2,camY=2,camZoom=1;
+function worldToScreen(x,y){
+  return [(x-camX)*SCALE+W*0.5,(camY-y)*SCALE+H*0.58];
+}
+function drawRope(r,c1,c2,width){
+  const grad=cx.createLinearGradient(...worldToScreen(r.p[0][0],r.p[0][1]),
+                                     ...worldToScreen(r.p[r.p.length-1][0],r.p[r.p.length-1][1]));
+  grad.addColorStop(0,c1);grad.addColorStop(1,c2);
+  cx.strokeStyle=grad;cx.lineWidth=width;cx.lineCap='round';cx.lineJoin='round';
+  cx.beginPath();
+  for(let i=0;i<r.p.length;i++){
+    const [sx,sy]=worldToScreen(r.p[i][0],r.p[i][1]);
+    i?cx.lineTo(sx,sy):cx.moveTo(sx,sy);
+  }
+  cx.stroke();
+}
+function render(alpha){
+  cx.setTransform(DPR,0,0,DPR,0,0);
+  const m=game.motor,p=game.partner;
+
+  // câmera: segue o jogador com peso no parceiro (igual CameraRig.cs)
+  const tgtX=m.x+(p.x-m.x)*0.3+m.facing*1.0, tgtY=Math.max(m.y+(p.y-m.y)*0.3,0.5);
+  camX+=(tgtX-camX)*0.08; camY+=(tgtY-camY)*0.08;
+
+  // fundo
+  cx.fillStyle='#070b16';cx.fillRect(0,0,W,H);
+  cx.fillStyle='rgba(223,232,255,0.8)';
+  for(const s of stars){
+    const sx=((s[0]-camX*0.15)%95+95)%95/95*W, sy=H*0.05+s[1]*H*0.04;
+    cx.globalAlpha=s[3];cx.fillRect(sx,sy,s[2],s[2]);
+  }
+  cx.globalAlpha=1;
+  // colinas distantes
+  cx.fillStyle='#0b1124';
+  cx.beginPath();cx.moveTo(0,H);
+  for(let i=0;i<=16;i++){const wx=camX*0.5+(i-8)*2.2;
+    cx.lineTo(i/16*W,H*0.72-Math.sin(wx*0.7)*H*0.06);}
+  cx.lineTo(W,H);cx.fill();
+
+  // plataformas
+  for(const s of solids){
+    const [x0,y1]=worldToScreen(s[0],s[3]), [x1,y0]=worldToScreen(s[1],s[2]);
+    cx.fillStyle='#101730';cx.fillRect(x0,y1,x1-x0,y0-y1);
+    cx.fillStyle='rgba(255,217,138,0.16)';cx.fillRect(x0,y1,x1-x0,2.5); // rim light
+  }
+  // ganchos
+  for(const h of hooks){
+    const [sx,sy]=worldToScreen(h[0],h[1]);
+    cx.drawImage(glowGold,sx-20,sy-20,40,40);
+    cx.fillStyle='#ffd98a';cx.beginPath();cx.arc(sx,sy,4,0,7);cx.fill();
+  }
+  // farol da chegada
+  {const [sx,sy]=worldToScreen(GOAL_X,0);
+   const pulse=0.75+Math.sin(performance.now()*0.003)*0.25;
+   cx.globalAlpha=pulse;cx.drawImage(glowTeal,sx-70,sy-150,140,160);cx.globalAlpha=1;
+   cx.fillStyle='#7de8d8';cx.fillRect(sx-2,sy-56,4,56);}
+
+  // fio jogador↔parceiro (sempre) + fio de balanço
+  drawRope(game.rope,'rgba(255,217,138,0.75)','rgba(125,232,216,0.75)',2.5);
+  if(game.mode==='swing'&&game.swingRope)
+    drawRope(game.swingRope,'rgba(255,230,170,0.95)','rgba(255,217,138,0.9)',3.2);
+
+  // mira (segurando ação) — câmera lenta local
+  if(inputAiming()){
+    const inp={x:game.motor.facing*0.7,y:0.7};
+    if(len(input.stick.x,input.stick.y)>0.3){inp.x=input.stick.x;inp.y=Math.max(input.stick.y,0.15);}
+    const list=allAnchors(), i=selectHook(m.x,m.y,inp.x,inp.y,list);
+    const il=len(inp.x,inp.y);
+    cx.setLineDash([3,7]);cx.strokeStyle='rgba(255,217,138,0.5)';cx.lineWidth=1.5;
+    cx.beginPath();const [ax,ay]=worldToScreen(m.x,m.y);
+    const [bx,by]=worldToScreen(m.x+inp.x/il*T.aim.range,m.y+inp.y/il*T.aim.range);
+    cx.moveTo(ax,ay);cx.lineTo(bx,by);cx.stroke();cx.setLineDash([]);
+    if(i>=0){const [hx,hy]=worldToScreen(list[i][0],list[i][1]);
+      cx.strokeStyle='#ffd98a';cx.lineWidth=2;
+      cx.beginPath();cx.arc(hx,hy,12+Math.sin(performance.now()*0.012)*3,0,7);cx.stroke();}
+  }
+
+  // personagens (orbes de luz)
+  const [px,py]=worldToScreen(m.x,m.y);
+  const [qx,qy]=worldToScreen(p.x,p.y);
+  const apexScale=1+game.apexGlow*0.8; game.apexGlow*=0.9;
+  cx.drawImage(glowGold,px-44*apexScale,py-44*apexScale,88*apexScale,88*apexScale);
+  cx.fillStyle='#fff3d8';cx.beginPath();cx.arc(px,py,7,0,7);cx.fill();
+  const pinRing=p.pinned?1:0;
+  cx.drawImage(glowTeal,qx-34,qy-34,68,68);
+  cx.fillStyle='#e8fffb';cx.beginPath();cx.arc(qx,qy,5.5,0,7);cx.fill();
+  if(pinRing){cx.strokeStyle='#7de8d8';cx.lineWidth=2;
+    cx.beginPath();cx.arc(qx,qy,13,0,7);cx.stroke();}
+
+  // ESCURIDÃO: o mundo só existe perto da luz da dupla
+  const dPair=len(m.x-p.x,m.y-p.y);
+  const closeness=clamp(1-dPair/T.tether.maxLen,0,1);
+  const r1=(H*0.34)*(0.75+closeness*0.45), r2=(H*0.26)*(0.75+closeness*0.45);
+  cx.globalCompositeOperation='multiply';
+  const dark=cx.createRadialGradient(px,py,r1*0.35,px,py,r1);
+  dark.addColorStop(0,'rgba(255,255,255,1)');dark.addColorStop(1,'rgba(60,70,100,1)');
+  cx.fillStyle=dark;cx.fillRect(0,0,W,H);
+  cx.globalCompositeOperation='screen';
+  const lift=cx.createRadialGradient(qx,qy,8,qx,qy,r2);
+  lift.addColorStop(0,'rgba(50,80,80,0.55)');lift.addColorStop(1,'rgba(0,0,0,0)');
+  cx.fillStyle=lift;cx.fillRect(0,0,W,H);
+  cx.globalCompositeOperation='source-over';
+
+  // zonas de toque (sutis, só em touch)
+  if('ontouchstart' in window && game.state==='play'){
+    cx.fillStyle='rgba(223,232,255,0.05)';
+    if(input.stick.id>=0){
+      cx.strokeStyle='rgba(223,232,255,0.25)';cx.lineWidth=1.5;
+      cx.beginPath();cx.arc(input.stick.ox,input.stick.oy,52,0,7);cx.stroke();
+      cx.beginPath();cx.arc(input.stick.ox+input.stick.x*40,
+                            input.stick.oy-input.stick.y*40,16,0,7);
+      cx.fillStyle='rgba(223,232,255,0.3)';cx.fill();
+    }
+    cx.font='11px '+getComputedStyle(document.body).fontFamily;
+    cx.fillStyle='rgba(223,232,255,0.3)';cx.textAlign='center';
+    cx.fillText('PULO',W*0.78,H*0.9);
+    cx.fillText(game.mode==='swing'?'SOLTAR':'FIO',W*0.78,H*0.44);
+    cx.fillText(game.partner.pinned?'SOLTAR PARCEIRO':'FIXAR PARCEIRO',W*0.87,H*0.09);
+  }
+
+  // fade de respawn
+  if(game.fade>0){cx.fillStyle=`rgba(7,11,22,${game.fade})`;cx.fillRect(0,0,W,H);
+    game.fade=Math.max(0,game.fade-0.03);}
+}
+function inputAiming(){return (input.actionHeld||keys.KeyJ)&&game.mode==='move';}
+
+/* ---------- dicas contextuais + HUD ---------- */
+const hintEl=document.getElementById('hint'),
+      timerEl=document.getElementById('timer'),
+      zoneEl=document.getElementById('zone');
+let lastHint='';
+function updateHUD(){
+  const x=game.motor.x;
+  const mm=Math.floor(game.time/60),ss=String(Math.floor(game.time%60)).padStart(2,'0');
+  timerEl.textContent=`${mm}:${ss}`;
+  zoneEl.textContent=x<18?'clareira':x<34?'primeira travessia':x<46?'a subida':x<58?'o grande vão':'quase lá';
+  let h='';
+  if(game.mode==='swing') h='embale com o direcional · PULO solta no ápice';
+  else if(x<9) h='ande até a borda e pule o primeiro vão';
+  else if(x>=12&&x<18) h='segure FIO (J), mire no ponto de luz e solte';
+  else if(x>=34&&x<43) h='suba pelas plataformas';
+  else if(x>=43&&x<46) h='dois ganchos: emende um balanço no outro';
+  else if(x>=58) h='o farol é de vocês';
+  if(h!==lastHint){lastHint=h;hintEl.textContent=h;hintEl.hidden=!h;}
+}
+
+/* ---------- loop ---------- */
+let last=performance.now(),acc=0;
+function frame(now){
+  const raw=Math.min((now-last)/1000,0.1); last=now;
+  const timescale=inputAiming()?0.3:1;   // câmera lenta de mira (local, como no jogo real)
+  if(game.state==='play'){
+    acc+=raw*timescale;
+    let n=0; while(acc>=DT&&n++<4){ simStep(DT); acc-=DT; }
+  }
+  render();
+  updateHUD();
+  requestAnimationFrame(frame);
+}
+
+/* ---------- fluxo start/win ---------- */
+const startEl=document.getElementById('start'),winEl=document.getElementById('win');
+function startIfWaiting(){
+  if(game.state==='start'){game.state='play';startEl.hidden=true;}
+  else if(game.state==='win'){resetGame();}
+}
+startEl.addEventListener('touchstart',e=>{startIfWaiting();e.preventDefault();},{passive:false});
+startEl.addEventListener('click',startIfWaiting);
+winEl.addEventListener('touchstart',e=>{startIfWaiting();e.preventDefault();},{passive:false});
+winEl.addEventListener('click',startIfWaiting);
+function winGame(){
+  game.state='win';
+  const mm=Math.floor(game.time/60),ss=String(Math.floor(game.time%60)).padStart(2,'0');
+  document.getElementById('wintime').textContent=
+    `Tempo: ${mm}:${ss} · quedas: ${game.deaths}. No jogo completo, é aqui que entra a foto da dupla.`;
+  winEl.hidden=false;
+}
+function resetGame(){
+  Object.assign(game.motor,makeMotor(2,1.2));
+  game.mode='move';game.checkpoint=0;game.deaths=0;game.time=0;game.started=false;
+  game.partner.x=0.8;game.partner.y=2.2;game.partner.pinned=false;
+  game.rope=makeRope(game.motor.x,game.motor.y,game.partner.x,game.partner.y);
+  game.swingRope=null;game.state='play';winEl.hidden=true;
+}
+
+const boot=()=>requestAnimationFrame(frame);
+window.claude?.hot?.ready ? window.claude.hot.ready(boot) : boot();
+</script>

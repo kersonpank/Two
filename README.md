@@ -10,12 +10,32 @@ Jogo mobile de plataforma 2.5D cooperativo online para **duas pessoas, cada uma 
 
 | Área | Decisão | Por quê |
 |---|---|---|
-| Engine | **Unity 6 (URP)** | Melhor ecossistema de netcode com predição; export mobile maduro; física 2D pronta |
+| Engine | **Unity 6.3 LTS (URP)** | Melhor ecossistema de netcode com predição; export mobile maduro; física 2D pronta |
 | Netcode | **Photon Fusion 2 — Shared Mode** | Autoridade local do próprio personagem = input instantâneo; relay/matchmaking na nuvem = zero DevOps |
 | Física da corda | **Visual local (verlet) separada da restrição de gameplay** | A corda nunca "briga" com a rede; ver `docs/03-netcode.md` |
 | Backend | **Unity Gaming Services (Auth + Cloud Save + Analytics) ou Firebase** | Login anônimo, progresso na nuvem, deep links de convite |
 | Entrada na sala | **Código de 6 letras + deep link (WhatsApp)** | O loop de crescimento no Brasil é o link no zap |
 | Modelo | **Friend Pass**: um compra/baixa, convida o amigo de graça | Jogo co-op obrigatório precisa eliminar a fricção de "convencer o amigo" |
+
+## Estrutura do repositório
+
+```
+UnityProject/Assets/_Project/Scripts/
+  Core/    # Two.Core — TODO o gameplay em C# puro (sem UnityEngine): motor de
+           # plataforma, pêndulo do balanço, corda verlet, tether, aim assist
+  Unity/   # Two.Unity — a casca: adapters MonoBehaviour, input touch, câmera,
+           # corda visual, porta de rede (IPartnerProvider) + notas do Fusion 2
+tests/     # 25 testes headless do core (dotnet run — sem editor, roda em CI)
+prototype/ # protótipo HTML jogável (touch) com os MESMOS números de feel
+docs/      # visão, stack, netcode, roadmap
+```
+
+**Arquitetura em uma frase:** o personagem não sabe que a Unity nem a rede existem —
+`Two.Core` roda headless (testes, CI, bot, replay, futuro servidor), a Unity só
+apresenta, e a rede entra por uma única interface (`IPartnerProvider`).
+
+Para abrir na Unity: `UnityProject/SETUP.md`. Para rodar os testes:
+`dotnet run -c Release --project tests/Two.Core.Tests`.
 
 ## Documentos
 

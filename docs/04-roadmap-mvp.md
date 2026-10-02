@@ -72,7 +72,7 @@ Capítulos 2+, desafio diário, Friend Pass + IAP de cosméticos, iOS release, n
 
 ## Semana 1 (ações concretas)
 
-1. Projeto Unity 6 LTS + URP (template 2D), git LFS configurado, `.gitignore` de Unity.
+1. Projeto Unity 6.3 LTS + URP (template 2D), git LFS configurado, `.gitignore` de Unity.
 2. Pacotes: Input System, Cinemachine 3, dependências Fusion 2 (SDK via Photon Dashboard — criar conta e app id já).
 3. Cena playground cinza + controller v0 (andar/pular com assists).
 4. Verlet rope visual v0 pendurada num gancho (validar o look do fio de luz com Light2D cedo — é a identidade visual do jogo).

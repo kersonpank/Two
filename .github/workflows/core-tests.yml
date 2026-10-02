@@ -1,0 +1,19 @@
+# CI dos testes headless do core: cada push prova que a física do jogo continua sã,
+# sem precisar de licença ou editor da Unity no CI.
+name: core-tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Run Two.Core tests
+        run: dotnet run -c Release --project tests/Two.Core.Tests

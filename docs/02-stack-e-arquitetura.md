@@ -13,7 +13,7 @@ O requisito que decide tudo: **física de corda entre dois jogadores, online, em
 | Ferramental de "feel" (câmera, tween, partículas) | ✅ Cinemachine, ecossistema enorme | ✅ bom | ✅ | ⚠️ | ⚠️ |
 | Custo | Grátis < US$200k/ano de receita (Unity Personal, sem splash obrigatório; runtime fee foi cancelada em 2024) | Grátis (MIT) | 5% royalty > US$1M | Grátis | Grátis |
 
-**Decisão: Unity 6 LTS + URP.** O gargalo do projeto é netcode-com-física, e é exatamente aí que o ecossistema Unity está anos à frente para um time pequeno.
+**Decisão: Unity 6.3 LTS + URP.** O gargalo do projeto é netcode-com-física, e é exatamente aí que o ecossistema Unity está anos à frente para um time pequeno.
 
 - **Godot** é a alternativa legítima se a prioridade for stack 100% livre — mas você escreveria predição, interpolação, transferência de autoridade e relay na mão. São 2–3 meses extras no problema mais arriscado do projeto.
 - **Web/PWA** é tentador pela distribuição instantânea, mas "fluido e viciante" em browser mobile briga com: Safari iOS (sem fullscreen real, sem haptics decentes), jitter de GC do JS, e WebRTC exigindo seus próprios servidores TURN. Não vale a troca.
@@ -21,7 +21,7 @@ O requisito que decide tudo: **física de corda entre dois jogadores, online, em
 ## Stack completa
 
 ### Cliente (o jogo)
-- **Unity 6 LTS** (6000.x), **URP**, pipeline 2.5D: gameplay num plano 2D (`Rigidbody2D`), cenário com camadas de parallax e luz 2D (`Light2D` — casa perfeitamente com o tema "fio de luz").
+- **Unity 6.3 LTS** (6000.3.x, suporte até dez/2027), **URP**, pipeline 2.5D: gameplay num plano 2D (`Rigidbody2D`), cenário com camadas de parallax e luz 2D (`Light2D` — casa perfeitamente com o tema "fio de luz").
 - **Física:** Unity Physics 2D (Box2D). Corda de gameplay = restrição de distância própria (ver netcode); corda visual = verlet caseiro (~20 segmentos, `LineRenderer` com glow). **Não** usar cadeia de `HingeJoint2D` para a corda — instável, caro e péssimo para rede.
 - **Input System** (novo) com controles touch próprios (joystick flutuante não vem pronto de qualidade — fazer o nosso, é pequeno).
 - **Cinemachine 3** para a câmera descrita no doc 01.
@@ -39,8 +39,8 @@ O requisito que decide tudo: **física de corda entre dois jogadores, online, em
 - **Deep links:** Android App Links + iOS Universal Links apontando para uma página estática (`two.app/j/ABC123`) que redireciona para a loja se o app não estiver instalado. (Firebase Dynamic Links foi descontinuado — não usar.)
 
 ### Custos de rede (ordem de grandeza)
-- Photon free tier: **20 CCU = 10 duplas simultâneas**. Com sessões de ~20 min, isso atende confortavelmente algumas centenas de DAU — sobra para todo o desenvolvimento e o soft launch.
-- Próximo degrau (~100 CCU ≈ 50 duplas) fica na casa de ~US$100/mês — confirmar tabela vigente da Photon quando chegar lá. Tráfego de um jogo de 2 players com snapshot pequeno é mínimo; o custo é CCU, não banda.
+- Photon free tier (verificado out/2026): **100 CCU grátis = 50 duplas simultâneas** para um app. Com sessões de ~20 min, isso atende alguns milhares de DAU — cobre desenvolvimento E soft launch inteiros sem custo.
+- Degraus seguintes: ~US$125/mês para 500 CCU, ~US$250 para 1.000. Tráfego de um jogo de 2 players com snapshot pequeno é mínimo; o custo é CCU, não banda.
 
 ## Metas de performance (restrição de design, não detalhe)
 

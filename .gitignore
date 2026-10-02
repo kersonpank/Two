@@ -1,0 +1,25 @@
+# --- Unity ---
+UnityProject/[Ll]ibrary/
+UnityProject/[Tt]emp/
+UnityProject/[Oo]bj/
+UnityProject/[Bb]uild/
+UnityProject/[Bb]uilds/
+UnityProject/[Ll]ogs/
+UnityProject/[Uu]ser[Ss]ettings/
+UnityProject/[Mm]emoryCaptures/
+UnityProject/[Rr]ecordings/
+UnityProject/Assets/Plugins/Editor/JetBrains*
+UnityProject/*.csproj
+UnityProject/*.sln
+UnityProject/.vsconfig
+UnityProject/crashlytics-build.properties
+
+# --- .NET (testes headless) ---
+tests/**/bin/
+tests/**/obj/
+
+# --- SO / editor ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
